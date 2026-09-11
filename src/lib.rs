@@ -25,11 +25,13 @@
 pub mod claim;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use claim::RowClaim;
 use rusqlite::{Connection, ErrorCode, TransactionBehavior, params};
 use transport::claim::ResourceClaim;
-use transport::error::{Result, TransportError};
+use transport::error::{Result, TransportError, protocol_error};
+use transport::loopback::{FarEnd, Loopback};
 use transport::{Arrived, Directions, Transport};
 
 /// The one table, created the first time the file is sent to.
@@ -171,6 +173,79 @@ impl Transport for SqliteTransport {
     }
 }
 
+impl SqliteTransport {
+    /// Both ends in one directory: send a row into a file there, take it
+    /// back from the same file. Nothing listens; the file is the wire, so
+    /// there is no port and no timeout.
+    #[must_use]
+    pub fn loopback(root: impl Into<PathBuf>) -> Self {
+        Self::new(root)
+    }
+
+    /// One file per thread: pairs driven at once from several threads would
+    /// otherwise contend for one file's write lock, which the engine
+    /// answers with busy rather than waiting. Per thread rather than per
+    /// round so the table is made once.
+    fn thread_file(&self) -> PathBuf {
+        self.path
+            .join(format!("t{:?}.sqlite", std::thread::current().id()))
+    }
+}
+
+/// Rounds begun, so each round's row is addressed to that round alone and
+/// a round that failed after its send leaves nothing the next one takes.
+static ROUNDS: AtomicU64 = AtomicU64::new(1);
+
+/// The row a round is addressed to. Nothing waits: the round is in order.
+struct Row {
+    file: PathBuf,
+    target: String,
+}
+
+impl FarEnd for Row {
+    fn address(&self) -> &str {
+        &self.target
+    }
+
+    fn take_one(self: Box<Self>) -> Result<Arrived> {
+        let Self { file, target } = *self;
+        SqliteTransport::new(file)
+            .only(target)
+            .receive()?
+            .into_iter()
+            .next()
+            .ok_or_else(|| protocol_error("sent, but it did not come back"))
+    }
+}
+
+impl Loopback for SqliteTransport {
+    fn far_end(&self) -> Result<Box<dyn FarEnd>> {
+        let round = ROUNDS.fetch_add(1, Ordering::Relaxed);
+        Ok(Box::new(Row {
+            file: self.thread_file(),
+            target: format!("round-{round}"),
+        }))
+    }
+
+    fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
+        Self::new(self.thread_file()).send(address, payload)
+    }
+
+    fn unblock(&self, _address: &str) {}
+
+    /// In order on one thread: a file does not listen, so the insert goes
+    /// first and the take finds it.
+    fn round(&self, payload: &[u8]) -> Result<Arrived> {
+        let far = self.far_end()?;
+        self.send_to(far.address(), payload)?;
+        let arrived = far.take_one()?;
+        if arrived.bytes != payload {
+            return Err(protocol_error("sent, but what came back differs"));
+        }
+        Ok(arrived)
+    }
+}
+
 /// The row an origin names, or zero where it names none.
 fn row_of(origin: &str) -> i64 {
     origin
@@ -297,6 +372,50 @@ mod tests {
         assert_eq!(queue.directions(), Directions::BOTH);
         assert!(queue.claims().is_some(), "the claimed column");
         assert!(queue.origin().starts_with("sqlite:///"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_loopback_sends_a_row_and_takes_it_back_from_the_same_file() {
+        let dir = scratch("loopback");
+        let pair = SqliteTransport::loopback(&dir);
+        let arrived = pair.round(b"a row").expect("round");
+        assert_eq!(arrived.bytes, b"a row");
+        assert!(arrived.origin_uri.starts_with("sqlite:///"));
+        assert!(arrived.origin_uri.contains("?row="));
+        let again = pair.round(b"another").expect("a second round");
+        assert_eq!(again.bytes, b"another");
+        assert_ne!(
+            arrived.origin_uri, again.origin_uri,
+            "each round its own row"
+        );
+        assert_eq!(pair.name(), "sqlite");
+        assert_eq!(pair.ceiling(), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The Playground's edge payloads, written here so the crate does not
+    /// depend on it.
+    fn edge_payloads() -> Vec<(&'static str, Vec<u8>)> {
+        vec![
+            ("empty", Vec::new()),
+            ("one byte", vec![0x2a]),
+            ("every byte", (0..=255).collect()),
+            ("nul run", vec![0; 512]),
+            ("high bytes", vec![0xff; 512]),
+            ("crlf storm", b"\r\n".repeat(400)),
+        ]
+    }
+
+    #[test]
+    fn the_loopback_returns_the_edge_payloads_whole() {
+        let dir = scratch("edges");
+        let pair = SqliteTransport::loopback(&dir);
+        for (name, payload) in edge_payloads() {
+            assert!(pair.refuses(&payload).is_none(), "{name}");
+            let arrived = pair.round(&payload).expect(name);
+            assert_eq!(arrived.bytes, payload, "{name}");
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 }
