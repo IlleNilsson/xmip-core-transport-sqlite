@@ -236,13 +236,7 @@ impl Loopback for SqliteTransport {
     /// In order on one thread: a file does not listen, so the insert goes
     /// first and the take finds it.
     fn round(&self, payload: &[u8]) -> Result<Arrived> {
-        let far = self.far_end()?;
-        self.send_to(far.address(), payload)?;
-        let arrived = far.take_one()?;
-        if arrived.bytes != payload {
-            return Err(protocol_error("sent, but what came back differs"));
-        }
-        Ok(arrived)
+        self.round_in_order(payload)
     }
 }
 
@@ -282,6 +276,7 @@ pub fn engine_error(error: &rusqlite::Error) -> TransportError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use transport::payload::edge_payloads;
 
     fn scratch(name: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -392,19 +387,6 @@ mod tests {
         assert_eq!(pair.name(), "sqlite");
         assert_eq!(pair.ceiling(), None);
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    /// The Playground's edge payloads, written here so the crate does not
-    /// depend on it.
-    fn edge_payloads() -> Vec<(&'static str, Vec<u8>)> {
-        vec![
-            ("empty", Vec::new()),
-            ("one byte", vec![0x2a]),
-            ("every byte", (0..=255).collect()),
-            ("nul run", vec![0; 512]),
-            ("high bytes", vec![0xff; 512]),
-            ("crlf storm", b"\r\n".repeat(400)),
-        ]
     }
 
     #[test]
