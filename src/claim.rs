@@ -4,7 +4,7 @@
 //! one file at the same time and take different rows, because the engine
 //! serialises the two `UPDATE`s and the second finds nothing left to flip.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use rusqlite::Connection;
 use transport::claim::{Artefact, Claimed, ResourceClaim};
@@ -40,7 +40,7 @@ impl RowClaim {
         let (file, row) = address
             .rsplit_once("?row=")
             .ok_or_else(|| TransportError::permanent(format!("{address} does not name a row")))?;
-        let expected = format!("sqlite://{}", uri_path(&self.path));
+        let expected = format!("sqlite://{}", net::uri::path_of(&self.path));
         if file != expected {
             return Err(TransportError::permanent(format!(
                 "{address} is not a row of {}",
@@ -83,16 +83,6 @@ impl ResourceClaim for RowClaim {
             .execute(RELEASE, [row])
             .map_err(|error| engine_error(&error))?;
         Ok(())
-    }
-}
-
-/// As `lib.rs` renders it; the two must agree or no claim ever matches.
-fn uri_path(path: &Path) -> String {
-    let text = path.display().to_string().replace(char::from(92), "/");
-    if text.starts_with('/') {
-        text
-    } else {
-        format!("/{text}")
     }
 }
 

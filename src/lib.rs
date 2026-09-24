@@ -29,8 +29,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use claim::RowClaim;
 use rusqlite::{Connection, ErrorCode, TransactionBehavior, params};
+use transport::arrived::next_arrival;
 use transport::claim::ResourceClaim;
-use transport::error::{Result, TransportError, protocol_error};
+use transport::error::{Result, TransportError};
+use transport::held::Held;
 use transport::loopback::{FarEnd, Loopback};
 use transport::{Arrived, Directions, Transport};
 
@@ -82,7 +84,7 @@ impl SqliteTransport {
     /// `sqlite:///<path>?row=`.
     #[must_use]
     pub fn origin(&self) -> String {
-        format!("sqlite://{}?row=", uri_path(&self.path))
+        format!("sqlite://{}?row=", net::uri::path_of(&self.path))
     }
 
     /// The file, opened with its table in place.
@@ -196,35 +198,19 @@ impl SqliteTransport {
 /// a round that failed after its send leaves nothing the next one takes.
 static ROUNDS: AtomicU64 = AtomicU64::new(1);
 
-/// The row a round is addressed to. Nothing waits: the round is in order.
-struct Row {
-    file: PathBuf,
-    target: String,
-}
-
-impl FarEnd for Row {
-    fn address(&self) -> &str {
-        &self.target
-    }
-
-    fn take_one(self: Box<Self>) -> Result<Arrived> {
-        let Self { file, target } = *self;
-        SqliteTransport::new(file)
-            .only(target)
-            .receive()?
-            .into_iter()
-            .next()
-            .ok_or_else(|| protocol_error("sent, but it did not come back"))
-    }
-}
-
 impl Loopback for SqliteTransport {
+    /// The row a round is addressed to. Nothing waits: the round is in
+    /// order.
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
         let round = ROUNDS.fetch_add(1, Ordering::Relaxed);
-        Ok(Box::new(Row {
-            file: self.thread_file(),
-            target: format!("round-{round}"),
-        }))
+        let target = format!("round-{round}");
+        let file = self.thread_file();
+        Ok(Box::new(Held::new(target.clone(), move || {
+            next_arrival(
+                SqliteTransport::new(file).only(target).receive()?,
+                "sent, but it did not come back",
+            )
+        })))
     }
 
     fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
@@ -246,17 +232,6 @@ fn row_of(origin: &str) -> i64 {
         .rsplit_once("?row=")
         .and_then(|(_, id)| id.parse().ok())
         .unwrap_or(0)
-}
-
-/// `path` as the path part of a URI: forward slashes, and a leading slash
-/// so a Windows drive reads `/C:/...` after the `sqlite://` authority.
-fn uri_path(path: &Path) -> String {
-    let text = path.display().to_string().replace(char::from(92), "/");
-    if text.starts_with('/') {
-        text
-    } else {
-        format!("/{text}")
-    }
 }
 
 /// What the engine said, judged: a busy or locked file will free up, a
