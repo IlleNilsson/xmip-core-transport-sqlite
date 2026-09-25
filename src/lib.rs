@@ -217,12 +217,10 @@ impl Loopback for SqliteTransport {
         Self::new(self.thread_file()).send(address, payload)
     }
 
-    fn unblock(&self, _address: &str) {}
-
     /// In order on one thread: a file does not listen, so the insert goes
     /// first and the take finds it.
-    fn round(&self, payload: &[u8]) -> Result<Arrived> {
-        self.round_in_order(payload)
+    fn exchanges_in_order(&self) -> bool {
+        true
     }
 }
 
