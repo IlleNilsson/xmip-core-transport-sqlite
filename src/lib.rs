@@ -34,7 +34,8 @@ use transport::claim::ResourceClaim;
 use transport::error::{Result, TransportError};
 use transport::held::Held;
 use transport::loopback::{FarEnd, Loopback};
-use transport::{Arrived, Directions, Transport};
+use transport::{Arrived, Configured, Directions, Transport};
+use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
 
 /// The one table, created the first time the file is sent to.
 pub const CREATE: &str = "CREATE TABLE IF NOT EXISTS xmip_transport (\
@@ -175,6 +176,30 @@ impl Transport for SqliteTransport {
     }
 }
 
+impl Configured for SqliteTransport {
+    /// The address is the database file: where a Send Location inserts and a
+    /// Receive Location takes rows.
+    const SETTINGS: &'static Settings = &Settings {
+        technology: env!("CARGO_PKG_NAME"),
+        settings: &[Setting {
+            name: "target",
+            kind: Kind::Text,
+            presence: Presence::Optional,
+            meaning: "The target a Receive Location takes rows sent to; every row when left \
+                      out.",
+            applies: Applies::Receive,
+        }],
+    };
+
+    fn configured(address: &str, settings: &Read) -> Result<Self> {
+        let transport = Self::new(address);
+        Ok(match settings.optional_text("target") {
+            Some(target) => transport.only(target),
+            None => transport,
+        })
+    }
+}
+
 impl SqliteTransport {
     /// Both ends in one directory: send a row into a file there, take it
     /// back from the same file. Nothing listens; the file is the wire, so
@@ -250,6 +275,23 @@ pub fn engine_error(error: &rusqlite::Error) -> TransportError {
 mod tests {
     use super::*;
     use transport::payload::edge_payloads;
+
+    #[test]
+    fn sqlite_declares_its_settings_and_reads_through_them() {
+        use xcore::settings::Given;
+        assert_eq!(SqliteTransport::SETTINGS.problems(), Vec::<String>::new());
+        let given = [("target".to_string(), Given::Text("orders".to_string()))];
+        let built = <SqliteTransport as Configured>::open("queue.sqlite", Applies::Receive, &given)
+            .expect("configured");
+        assert_eq!(built.path(), Path::new("queue.sqlite"));
+        assert_eq!(built.only.as_deref(), Some("orders"));
+        let Err(refused) =
+            <SqliteTransport as Configured>::open("queue.sqlite", Applies::Send, &given)
+        else {
+            panic!("a Send Location takes no rows");
+        };
+        assert!(refused.message.contains("\"target\""), "{refused}");
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
