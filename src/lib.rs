@@ -6,10 +6,11 @@
 //! producer inserts, an integrator polls, and the file's own locking is the
 //! broker. Nothing is installed and nothing listens. A Send Location inserts
 //! the Stream as one row of `xmip_transport` — `id`, `target`, `payload`,
-//! `claimed` — and a Receive Location takes the oldest unclaimed rows and
-//! marks them claimed in one transaction, so two nodes polling the same
-//! file never take the same row. What is spoken is SQL to the engine
-//! compiled into this crate; the file is the wire.
+//! `claimed` — and a Receive Location reads the oldest unclaimed rows and
+//! marks each claimed only when its receive cycle accepted it: a refused
+//! row stays unclaimed for the next receive, and two nodes polling the same
+//! file may both read a row until one accepts it. What is spoken is SQL to
+//! the engine compiled into this crate; the file is the wire.
 //!
 //! The row is the artefact, and the `claimed` column is its claim, per
 //! ADR-0024: taken at the endpoint, atomic because the engine makes it so,
@@ -23,12 +24,13 @@
 //! where the row is going, which a Receive Location may filter on.
 
 pub mod claim;
+pub mod receipt;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use claim::RowClaim;
-use rusqlite::{Connection, ErrorCode, TransactionBehavior, params};
+use rusqlite::{Connection, ErrorCode, params};
 use transport::arrived::next_arrival;
 use transport::claim::ResourceClaim;
 use transport::error::{Result, TransportError};
@@ -44,10 +46,9 @@ pub const CREATE: &str = "CREATE TABLE IF NOT EXISTS xmip_transport (\
     payload BLOB NOT NULL, \
     claimed INTEGER NOT NULL DEFAULT 0)";
 const INSERT: &str = "INSERT INTO xmip_transport (target, payload, claimed) VALUES (?1, ?2, 0)";
-const TAKE_ALL: &str = "UPDATE xmip_transport SET claimed = 1 \
-    WHERE claimed = 0 RETURNING id, target, payload";
-const TAKE_TARGET: &str = "UPDATE xmip_transport SET claimed = 1 \
-    WHERE claimed = 0 AND target = ?1 RETURNING id, target, payload";
+const UNCLAIMED_ALL: &str = "SELECT id, payload FROM xmip_transport WHERE claimed = 0 ORDER BY id";
+const UNCLAIMED_TARGET: &str =
+    "SELECT id, payload FROM xmip_transport WHERE claimed = 0 AND target = ?1 ORDER BY id";
 
 pub struct SqliteTransport {
     path: PathBuf,
@@ -104,42 +105,35 @@ impl SqliteTransport {
         Ok(connection)
     }
 
-    /// Take the oldest unclaimed rows, marking them claimed in the same
-    /// transaction, oldest first.
+    /// The oldest unclaimed rows, oldest first, read in one statement; the
+    /// accepted ones are claimed in one transaction once every row has its
+    /// verdict, and a refused row stays unclaimed for the next receive
+    /// ([`receipt`]). One connection serves the receive and its rows'
+    /// verdicts.
     ///
     /// # Errors
     /// Where the file could not be opened or the engine refused — a file
     /// another writer holds is retryable, a file that is not a database is
     /// not.
     pub fn take(&self) -> Result<Vec<Arrived>> {
-        let mut connection = self.open()?;
-        let transaction = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|error| engine_error(&error))?;
-        let origin = self.origin();
+        let connection = self.open()?;
         let rows = {
             let (sql, filter): (&str, Vec<&str>) = match &self.only {
-                Some(target) => (TAKE_TARGET, vec![target.as_str()]),
-                None => (TAKE_ALL, Vec::new()),
+                Some(target) => (UNCLAIMED_TARGET, vec![target.as_str()]),
+                None => (UNCLAIMED_ALL, Vec::new()),
             };
-            let mut statement = transaction
+            let mut statement = connection
                 .prepare(sql)
                 .map_err(|error| engine_error(&error))?;
-            let mut rows = statement
+            statement
                 .query_map(rusqlite::params_from_iter(filter), |row| {
-                    let id: i64 = row.get(0)?;
-                    let payload: Vec<u8> = row.get(2)?;
-                    Ok(Arrived::new(format!("{origin}{id}"), payload))
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
                 })
                 .map_err(|error| engine_error(&error))?
                 .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|error| engine_error(&error))?;
-            // RETURNING answers in no promised order; the queue is oldest first.
-            rows.sort_by_key(|arrived| row_of(&arrived.origin_uri));
-            rows
+                .map_err(|error| engine_error(&error))?
         };
-        transaction.commit().map_err(|error| engine_error(&error))?;
-        Ok(rows)
+        Ok(receipt::arrivals(connection, rows, &self.origin()))
     }
 }
 
@@ -152,8 +146,13 @@ impl Transport for SqliteTransport {
         Directions::BOTH
     }
 
-    /// The oldest unclaimed rows, claimed. A file nobody has sent to yet is
-    /// not an error: an empty vector.
+    fn arrivals(&self) -> transport::Arrivals {
+        transport::Arrivals::Ordered("a poll reads again what is not yet told")
+    }
+
+    /// The oldest unclaimed rows, each claimed on `Accepted` and left
+    /// unclaimed on `Refused` ([`Self::take`]). A file nobody has sent to
+    /// yet is not an error: an empty vector.
     fn receive(&self) -> Result<Vec<Arrived>> {
         if !self.path.is_file() {
             return Ok(Vec::new());
@@ -234,7 +233,8 @@ impl Loopback for SqliteTransport {
             next_arrival(
                 SqliteTransport::new(file).only(target).receive()?,
                 "sent, but it did not come back",
-            )
+            )?
+            .taken()
         })))
     }
 
@@ -247,14 +247,6 @@ impl Loopback for SqliteTransport {
     fn exchanges_in_order(&self) -> bool {
         true
     }
-}
-
-/// The row an origin names, or zero where it names none.
-fn row_of(origin: &str) -> i64 {
-    origin
-        .rsplit_once("?row=")
-        .and_then(|(_, id)| id.parse().ok())
-        .unwrap_or(0)
 }
 
 /// What the engine said, judged: a busy or locked file will free up, a
@@ -274,6 +266,7 @@ pub fn engine_error(error: &rusqlite::Error) -> TransportError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read as _;
     use transport::payload::edge_payloads;
 
     #[test]
@@ -312,7 +305,7 @@ mod tests {
         queue.send("orders", b"first").expect("sending");
         queue.send("orders", &[0xff, 0x00, 0xfe]).expect("sending");
         queue.send("invoices", b"third").expect("sending");
-        let arrived = queue.receive().expect("receiving");
+        let arrived = taken_all(&queue);
         assert_eq!(arrived.len(), 3);
         assert_eq!(arrived[0].bytes, b"first");
         assert_eq!(arrived[1].bytes, [0xff, 0x00, 0xfe], "bytes as they are");
@@ -337,6 +330,53 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Every row a receive found, read and accepted.
+    fn taken_all(queue: &SqliteTransport) -> Vec<transport::Taken> {
+        queue
+            .receive()
+            .expect("receiving")
+            .into_iter()
+            .map(|one| one.taken().expect("taken"))
+            .collect()
+    }
+
+    #[test]
+    fn a_failed_row_stays_unclaimed_and_an_accepted_and_a_refused_one_are_claimed() {
+        let dir = scratch("verdict");
+        let queue = SqliteTransport::new(dir.join("inbox.sqlite"));
+        queue.send("orders", b"first").expect("sending");
+        queue.send("orders", b"second").expect("sending");
+        queue.send("orders", b"third").expect("sending");
+        let mut arrived = queue.receive().expect("receiving");
+        assert!(arrived.iter().all(Arrived::defers));
+        // The first read and failed, the second failed unread, the third
+        // refused.
+        let (_, mut body, acknowledgement) = arrived.remove(0).into_parts();
+        let mut read = Vec::new();
+        body.read_to_end(&mut read).expect("reading");
+        assert_eq!(read, b"first");
+        drop(body);
+        acknowledgement
+            .acknowledge(transport::Verdict::Failed)
+            .expect("failed");
+        arrived.remove(0).failed().expect("failed");
+        arrived
+            .remove(0)
+            .refused(transport::Refusal::Unacceptable)
+            .expect("refused");
+        let again = taken_all(&queue);
+        assert_eq!(again.len(), 2, "failed rows are taken again, refused not");
+        assert_eq!(
+            (again[0].bytes.as_slice(), again[1].bytes.as_slice()),
+            (&b"first"[..], &b"second"[..])
+        );
+        assert!(
+            queue.receive().expect("once more").is_empty(),
+            "accepted and refused rows are claimed"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn a_receive_filtered_on_a_target_leaves_the_other_rows_unclaimed() {
         let dir = scratch("only");
@@ -345,10 +385,10 @@ mod tests {
         queue.send("orders", b"order").expect("sending");
         queue.send("invoices", b"invoice").expect("sending");
         let invoices = SqliteTransport::new(&path).only("invoices");
-        let arrived = invoices.receive().expect("receiving");
+        let arrived = taken_all(&invoices);
         assert_eq!(arrived.len(), 1);
         assert_eq!(arrived[0].bytes, b"invoice");
-        let rest = queue.receive().expect("the rest");
+        let rest = taken_all(&queue);
         assert_eq!(rest.len(), 1);
         assert_eq!(rest[0].bytes, b"order");
         std::fs::remove_dir_all(&dir).ok();

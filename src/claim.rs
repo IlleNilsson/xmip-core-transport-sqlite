@@ -1,8 +1,10 @@
 //! The row's own claim: its `claimed` column, flipped in one statement.
 //!
-//! ADR-0024 clause 4: the artefact, not the location. Two nodes may poll
-//! one file at the same time and take different rows, because the engine
-//! serialises the two `UPDATE`s and the second finds nothing left to flip.
+//! ADR-0024 clause 4: the artefact, not the location. A receive reads the
+//! unclaimed rows and flips each one's claim when its receive cycle
+//! accepted it ([`crate::SqliteTransport::take`]): two nodes polling one
+//! file may both read a row until one of them accepts it, and the engine
+//! serialises the two `UPDATE`s, so the second finds nothing left to flip.
 
 use std::path::PathBuf;
 
@@ -13,7 +15,9 @@ use transport::error::{Result, TransportError};
 use crate::engine_error;
 
 const IS_AVAILABLE: &str = "SELECT claimed FROM xmip_transport WHERE id = ?1";
-const CLAIM: &str = "UPDATE xmip_transport SET claimed = 1 WHERE id = ?1 AND claimed = 0";
+/// Flip one row's claim, where nothing flipped it first.
+pub(crate) const CLAIM: &str =
+    "UPDATE xmip_transport SET claimed = 1 WHERE id = ?1 AND claimed = 0";
 const RELEASE: &str = "UPDATE xmip_transport SET claimed = 0 WHERE id = ?1 AND claimed = 1";
 
 /// The claim on one row of one file, addressed as the row's origin URI.
