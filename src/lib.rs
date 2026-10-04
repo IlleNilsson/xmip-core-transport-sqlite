@@ -8,8 +8,10 @@
 //! the Stream as one row of `xmip_transport` — `id`, `target`, `payload`,
 //! `claimed` — and a Receive Location reads the oldest unclaimed rows and
 //! marks each claimed only when its receive cycle accepted it: a refused
-//! row stays unclaimed for the next receive, and two nodes polling the same
-//! file may both read a row until one accepts it. What is spoken is SQL to
+//! row stays unclaimed, and this Location does not receive it again while
+//! its payload is unchanged; a failed row stays for the next receive, and
+//! two nodes polling the same file may both read a row until one accepts
+//! it. What is spoken is SQL to
 //! the engine compiled into this crate; the file is the wire.
 //!
 //! The row is the artefact, and the `claimed` column is its claim, per
@@ -54,6 +56,9 @@ pub struct SqliteTransport {
     path: PathBuf,
     only: Option<String>,
     claim: RowClaim,
+    /// The rows refused and left unclaimed, not received again while
+    /// unchanged.
+    refused: receipt::RefusedRows,
 }
 
 impl SqliteTransport {
@@ -66,6 +71,7 @@ impl SqliteTransport {
             claim: RowClaim::new(&path),
             path,
             only: None,
+            refused: receipt::RefusedRows::default(),
         }
     }
 
@@ -107,8 +113,8 @@ impl SqliteTransport {
 
     /// The oldest unclaimed rows, oldest first, read in one statement; the
     /// accepted ones are claimed in one transaction once every row has its
-    /// verdict, and a refused row stays unclaimed for the next receive
-    /// ([`receipt`]). One connection serves the receive and its rows'
+    /// verdict, and a refused row stays unclaimed and is not received
+    /// again while unchanged ([`receipt`]). One connection serves the receive and its rows'
     /// verdicts.
     ///
     /// # Errors
@@ -133,7 +139,12 @@ impl SqliteTransport {
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(|error| engine_error(&error))?
         };
-        Ok(receipt::arrivals(connection, rows, &self.origin()))
+        Ok(receipt::arrivals(
+            connection,
+            rows,
+            &self.refused,
+            &self.origin(),
+        ))
     }
 }
 
@@ -150,8 +161,8 @@ impl Transport for SqliteTransport {
         transport::Arrivals::Ordered("a poll reads again what is not yet told")
     }
 
-    /// The oldest unclaimed rows, each claimed on `Accepted` and left
-    /// unclaimed on `Refused` ([`Self::take`]). A file nobody has sent to
+    /// The oldest unclaimed rows, each claimed on `Accepted`, left
+    /// unclaimed and remembered on `Refused` ([`Self::take`]). A file nobody has sent to
     /// yet is not an error: an empty vector.
     fn receive(&self) -> Result<Vec<Arrived>> {
         if !self.path.is_file() {
@@ -341,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_row_stays_unclaimed_and_an_accepted_and_a_refused_one_are_claimed() {
+    fn a_failed_row_is_taken_again_a_refused_one_left_unclaimed_and_unreceived() {
         let dir = scratch("verdict");
         let queue = SqliteTransport::new(dir.join("inbox.sqlite"));
         queue.send("orders", b"first").expect("sending");
@@ -372,8 +383,12 @@ mod tests {
         );
         assert!(
             queue.receive().expect("once more").is_empty(),
-            "accepted and refused rows are claimed"
+            "accepted rows are claimed, the refused one is not received again"
         );
+        let elsewhere = SqliteTransport::new(dir.join("inbox.sqlite"));
+        let left = taken_all(&elsewhere);
+        assert_eq!(left.len(), 1, "the refused row is still there, unclaimed");
+        assert_eq!(left[0].bytes, b"third");
         std::fs::remove_dir_all(&dir).ok();
     }
 
