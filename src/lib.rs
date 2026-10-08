@@ -33,6 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use claim::RowClaim;
 use rusqlite::{Connection, ErrorCode, params};
+use transport::ArrivalIdentity;
 use transport::arrived::next_arrival;
 use transport::claim::ResourceClaim;
 use transport::error::{Result, TransportError};
@@ -234,6 +235,12 @@ impl SqliteTransport {
 static ROUNDS: AtomicU64 = AtomicU64::new(1);
 
 impl Loopback for SqliteTransport {
+    fn arrival_identity(&self) -> ArrivalIdentity {
+        ArrivalIdentity::Unnamed(
+            "a row names no sender: the database it was read from is in its origin",
+        )
+    }
+
     /// The row a round is addressed to. Nothing waits: the round is in
     /// order.
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {

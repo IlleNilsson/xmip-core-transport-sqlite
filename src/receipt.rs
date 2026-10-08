@@ -63,7 +63,7 @@ pub fn arrivals(
         .zip(acknowledgements)
         .map(|((id, payload), acknowledgement)| {
             let told = refused.remembering(id, stamp(&payload), acknowledgement);
-            Arrived::whole(format!("{origin}{id}"), payload, told)
+            Arrived::whole(format!("{origin}{id}"), payload, told).detected()
         })
         .collect()
 }
