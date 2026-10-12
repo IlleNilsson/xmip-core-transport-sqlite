@@ -162,6 +162,10 @@ impl Transport for SqliteTransport {
         transport::Arrivals::Ordered("a poll reads again what is not yet told")
     }
 
+    fn waiting(&self) -> transport::Waiting {
+        transport::Waiting::Polled("a query runs and returns its rows at once")
+    }
+
     /// The oldest unclaimed rows, each claimed on `Accepted`, left
     /// unclaimed and remembered on `Refused` ([`Self::take`]). A file nobody has sent to
     /// yet is not an error: an empty vector.
