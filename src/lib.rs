@@ -122,7 +122,7 @@ impl SqliteTransport {
     /// Where the file could not be opened or the engine refused — a file
     /// another writer holds is retryable, a file that is not a database is
     /// not.
-    pub fn take(&self) -> Result<Vec<Arrived>> {
+    pub fn take(&self, most: usize) -> Result<Vec<Arrived>> {
         let connection = self.open()?;
         let rows = {
             let (sql, filter): (&str, Vec<&str>) = match &self.only {
@@ -142,7 +142,7 @@ impl SqliteTransport {
         };
         Ok(receipt::arrivals(
             connection,
-            rows,
+            rows.into_iter().take(most).collect(),
             &self.refused,
             &self.origin(),
         ))
@@ -169,15 +169,20 @@ impl Transport for SqliteTransport {
     /// The oldest unclaimed rows, each claimed on `Accepted`, left
     /// unclaimed and remembered on `Refused` ([`Self::take`]). A file nobody has sent to
     /// yet is not an error: an empty vector.
-    fn receive(&self) -> Result<Vec<Arrived>> {
+    fn receive_up_to(&self, most: usize) -> Result<Vec<Arrived>> {
         if !self.path.is_file() {
             return Ok(Vec::new());
         }
-        self.take()
+        self.take(most)
+    }
+
+    fn sending(&self) -> transport::Sending {
+        transport::Sending::Gathered("an INSERT binds the body as one value")
     }
 
     /// Insert the bytes as one row addressed to `target`.
-    fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
+    fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
+        let bytes: &[u8] = &outgoing.gather()?;
         let connection = self.open()?;
         connection
             .execute(INSERT, params![target, bytes])
