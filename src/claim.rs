@@ -1,15 +1,15 @@
 //! The row's own claim: its `claimed` column, flipped in one statement.
 //!
-//! ADR-0024 clause 4: the artefact, not the location. A receive reads the
+//! ADR-0024 clause 4: the artifact, not the location. A receive reads the
 //! unclaimed rows and flips each one's claim when its receive cycle
 //! accepted it ([`crate::SqliteTransport::take`]): two nodes polling one
 //! file may both read a row until one of them accepts it, and the engine
-//! serialises the two `UPDATE`s, so the second finds nothing left to flip.
+//! serializes the two `UPDATE`s, so the second finds nothing left to flip.
 
 use std::path::PathBuf;
 
 use rusqlite::Connection;
-use transport::claim::{Artefact, Claimed, ResourceClaim};
+use transport::claim::{Artifact, Claimed, ResourceClaim};
 use transport::error::{Result, TransportError};
 
 use crate::engine_error;
@@ -37,10 +37,10 @@ impl RowClaim {
         crate::SqliteTransport::new(&self.path).open()
     }
 
-    /// The row an artefact names, refusing one of another file: a row id
+    /// The row an artifact names, refusing one of another file: a row id
     /// means nothing outside the file that issued it.
-    fn row_of(&self, artefact: &Artefact) -> Result<i64> {
-        let address = artefact.address();
+    fn row_of(&self, artifact: &Artifact) -> Result<i64> {
+        let address = artifact.address();
         let (file, row) = address
             .rsplit_once("?row=")
             .ok_or_else(|| TransportError::permanent(format!("{address} does not name a row")))?;
@@ -57,8 +57,8 @@ impl RowClaim {
 }
 
 impl ResourceClaim for RowClaim {
-    fn is_available(&self, artefact: &Artefact) -> Result<bool> {
-        let row = self.row_of(artefact)?;
+    fn is_available(&self, artifact: &Artifact) -> Result<bool> {
+        let row = self.row_of(artifact)?;
         let claimed: Option<i64> = self
             .open()?
             .query_row(IS_AVAILABLE, [row], |r| r.get(0))
@@ -66,23 +66,23 @@ impl ResourceClaim for RowClaim {
         Ok(claimed == Some(0))
     }
 
-    fn claim(&self, artefact: &Artefact) -> Result<Claimed> {
-        let row = self.row_of(artefact)?;
+    fn claim(&self, artifact: &Artifact) -> Result<Claimed> {
+        let row = self.row_of(artifact)?;
         let flipped = self
             .open()?
             .execute(CLAIM, [row])
             .map_err(|error| engine_error(&error))?;
         if flipped == 1 {
-            Ok(Claimed::new(artefact.clone(), row.to_string()))
+            Ok(Claimed::new(artifact.clone(), row.to_string()))
         } else {
             Err(TransportError::permanent(format!(
-                "{artefact} is held, or is no row"
+                "{artifact} is held, or is no row"
             )))
         }
     }
 
     fn release(&self, claimed: Claimed) -> Result<()> {
-        let row = self.row_of(&claimed.artefact)?;
+        let row = self.row_of(&claimed.artifact)?;
         self.open()?
             .execute(RELEASE, [row])
             .map_err(|error| engine_error(&error))?;
@@ -114,19 +114,19 @@ mod tests {
         let queue = SqliteTransport::new(dir.join("inbox.sqlite"));
         queue.send("orders", b"order").expect("sending");
         let claim = RowClaim::new(queue.path());
-        let artefact = Artefact::new(format!("{}1", queue.origin()));
-        assert!(claim.is_available(&artefact).expect("asked"));
-        let held = claim.claim(&artefact).expect("claimed");
+        let artifact = Artifact::new(format!("{}1", queue.origin()));
+        assert!(claim.is_available(&artifact).expect("asked"));
+        let held = claim.claim(&artifact).expect("claimed");
         assert_eq!(held.token, "1");
-        assert!(!claim.is_available(&artefact).expect("asked"));
-        let second = claim.claim(&artefact).expect_err("held");
+        assert!(!claim.is_available(&artifact).expect("asked"));
+        let second = claim.claim(&artifact).expect_err("held");
         assert!(!second.retryable);
         assert!(
             queue.receive().expect("receiving").is_empty(),
             "a claimed row is not received"
         );
         claim.release(held).expect("released");
-        assert!(claim.is_available(&artefact).expect("asked"));
+        assert!(claim.is_available(&artifact).expect("asked"));
         assert_eq!(queue.receive().expect("receiving").len(), 1);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -137,10 +137,10 @@ mod tests {
         let queue = SqliteTransport::new(dir.join("inbox.sqlite"));
         queue.send("orders", b"order").expect("sending");
         let claim = RowClaim::new(queue.path());
-        let other = Artefact::new("sqlite:///elsewhere/inbox.sqlite?row=1");
+        let other = Artifact::new("sqlite:///elsewhere/inbox.sqlite?row=1");
         assert!(claim.is_available(&other).is_err());
-        assert!(claim.claim(&Artefact::new("sqlite:///x")).is_err());
-        let missing = Artefact::new(format!("{}99", queue.origin()));
+        assert!(claim.claim(&Artifact::new("sqlite:///x")).is_err());
+        let missing = Artifact::new(format!("{}99", queue.origin()));
         assert!(claim.claim(&missing).is_err(), "no such row");
         std::fs::remove_dir_all(&dir).ok();
     }
