@@ -14,7 +14,7 @@
 //! it. What is spoken is SQL to
 //! the engine compiled into this crate; the file is the wire.
 //!
-//! The row is the artefact, and the `claimed` column is its claim, per
+//! The row is the artifact, and the `claimed` column is its claim, per
 //! ADR-0024: taken at the endpoint, atomic because the engine makes it so,
 //! and visible to anything else that opens the file. `claim.rs` speaks it.
 //! Nothing is deleted — a claimed row stays as the record of what passed,
