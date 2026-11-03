@@ -22,7 +22,7 @@ transport = { package = "xmip-core-transport", git = "https://github.com/IlleNil
 xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
 # The one real engine. Bundled: the SQLite amalgamation is compiled into the
 # crate, so a node needs no SQLite installed beside it.
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # A filesystem path as the path of a URI, written once for the estate.
 net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main" }
 
