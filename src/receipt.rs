@@ -9,17 +9,18 @@
 //! flush to disk once a row. A refusal is not a consumption: a Stream
 //! refused at a transport gate was never written to the Ledger, so the row
 //! is the only copy. A refused row is left unclaimed and remembered by its
-//! id with a hash of its payload ([`RefusedRows`]), and no receive hands it
-//! on again while it is unchanged. A failed row is left unclaimed for the
-//! next receive. A row whose verdict never comes is not claimed.
-
-use std::hash::{DefaultHasher, Hash, Hasher};
+//! id with a hash of its payload ([`RefusedRows`]), the stamp every SQL
+//! technology remembers a row by (`transport::sql::accept::stamp`), and no
+//! receive hands it on again while it is unchanged. A failed row is left
+//! unclaimed for the next receive. A row whose verdict never comes is not
+//! claimed.
 
 use rusqlite::Connection;
 use transport::Arrived;
 use transport::Refused;
 use transport::Verdict;
 use transport::error::Result;
+use transport::sql::accept::stamp;
 use transport::together::together;
 
 use crate::claim::CLAIM;
@@ -39,11 +40,6 @@ pub fn arrivals(
     refused: &RefusedRows,
     origin: &str,
 ) -> Vec<Arrived> {
-    let stamp = |payload: &Vec<u8>| {
-        let mut hasher = DefaultHasher::new();
-        payload.hash(&mut hasher);
-        hasher.finish()
-    };
     let rows = refused.sift(rows, |(id, _)| id, |(_, payload)| Some(stamp(payload)));
     let ids: Vec<i64> = rows.iter().map(|(id, _)| *id).collect();
     let acknowledgements = together(
