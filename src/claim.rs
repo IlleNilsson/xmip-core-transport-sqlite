@@ -96,21 +96,16 @@ mod tests {
     use crate::SqliteTransport;
     use transport::Transport;
 
-    fn scratch(name: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.as_nanos());
-        let dir = std::env::temp_dir().join(format!(
-            "xmip-transport-sqlite-claim-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        std::fs::remove_dir_all(&dir).ok();
-        dir
+    /// A folder of the test's own, and a directory in it not made yet.
+    fn scratch(name: &str) -> (file::temporary::Folder, PathBuf) {
+        let folder = file::temporary::Folder::new(&format!("transport-sqlite-claim-{name}"));
+        let dir = folder.join("sqlite");
+        (folder, dir)
     }
 
     #[test]
     fn a_row_is_claimed_once_and_released_by_its_holder() {
-        let dir = scratch("once");
+        let (_folder, dir) = scratch("once");
         let queue = SqliteTransport::new(dir.join("inbox.sqlite"));
         queue.send("orders", b"order").expect("sending");
         let claim = RowClaim::new(queue.path());
@@ -128,12 +123,11 @@ mod tests {
         claim.release(held).expect("released");
         assert!(claim.is_available(&artifact).expect("asked"));
         assert_eq!(queue.receive().expect("receiving").len(), 1);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn a_row_of_another_file_or_no_row_at_all_is_refused() {
-        let dir = scratch("other");
+        let (_folder, dir) = scratch("other");
         let queue = SqliteTransport::new(dir.join("inbox.sqlite"));
         queue.send("orders", b"order").expect("sending");
         let claim = RowClaim::new(queue.path());
@@ -142,6 +136,5 @@ mod tests {
         assert!(claim.claim(&Artifact::new("sqlite:///x")).is_err());
         let missing = Artifact::new(format!("{}99", queue.origin()));
         assert!(claim.claim(&missing).is_err(), "no such row");
-        std::fs::remove_dir_all(&dir).ok();
     }
 }

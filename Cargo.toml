@@ -30,6 +30,8 @@ net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson
 # The loopback payloads the tests drive, from the capability's test
 # support and never a production build (ADR-0044).
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main", features = ["test-support"] }
+# A test's own temporary folder (`file::temporary`); for the tests only.
+file = { package = "xmip-core-library-file", git = "https://github.com/IlleNilsson/xmip-core-library-file", branch = "main", features = ["test-support"] }
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -316,21 +316,16 @@ mod tests {
         assert!(refused.message.contains("\"target\""), "{refused}");
     }
 
-    fn scratch(name: &str) -> PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |since| since.as_nanos());
-        let dir = std::env::temp_dir().join(format!(
-            "xmip-transport-sqlite-{name}-{}-{nanos}",
-            std::process::id()
-        ));
-        std::fs::remove_dir_all(&dir).ok();
-        dir
+    /// A folder of the test's own, and a directory in it not made yet.
+    fn scratch(name: &str) -> (file::temporary::Folder, PathBuf) {
+        let folder = file::temporary::Folder::new(&format!("transport-sqlite-{name}"));
+        let dir = folder.join("sqlite");
+        (folder, dir)
     }
 
     #[test]
     fn a_sent_row_is_received_once_oldest_first_and_stays_claimed() {
-        let dir = scratch("queue");
+        let (_folder, dir) = scratch("queue");
         let queue = SqliteTransport::new(dir.join("inbox.sqlite"));
         queue.send("orders", b"first").expect("sending");
         queue.send("orders", &[0xff, 0x00, 0xfe]).expect("sending");
@@ -357,7 +352,6 @@ mod tests {
             )
             .expect("count");
         assert_eq!(count, 3, "nothing is deleted");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// Every row a receive found, read and accepted.
@@ -372,7 +366,7 @@ mod tests {
 
     #[test]
     fn a_failed_row_is_taken_again_a_refused_one_left_unclaimed_and_unreceived() {
-        let dir = scratch("verdict");
+        let (_folder, dir) = scratch("verdict");
         let queue = SqliteTransport::new(dir.join("inbox.sqlite"));
         queue.send("orders", b"first").expect("sending");
         queue.send("orders", b"second").expect("sending");
@@ -408,12 +402,11 @@ mod tests {
         let left = taken_all(&elsewhere);
         assert_eq!(left.len(), 1, "the refused row is still there, unclaimed");
         assert_eq!(left[0].bytes, b"third");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn a_receive_filtered_on_a_target_leaves_the_other_rows_unclaimed() {
-        let dir = scratch("only");
+        let (_folder, dir) = scratch("only");
         let path = dir.join("inbox.sqlite");
         let queue = SqliteTransport::new(&path);
         queue.send("orders", b"order").expect("sending");
@@ -425,12 +418,11 @@ mod tests {
         let rest = taken_all(&queue);
         assert_eq!(rest.len(), 1);
         assert_eq!(rest[0].bytes, b"order");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn a_file_nobody_has_sent_to_is_empty_and_a_file_that_is_no_database_is_refused() {
-        let dir = scratch("absent");
+        let (_folder, dir) = scratch("absent");
         let queue = SqliteTransport::new(dir.join("never.sqlite"));
         assert!(queue.receive().expect("not an error").is_empty());
         assert!(!dir.exists(), "a receive creates nothing");
@@ -445,23 +437,21 @@ mod tests {
             .receive()
             .expect_err("not a database");
         assert!(!error.retryable, "{error}");
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn the_row_is_the_claim_and_the_transport_says_so() {
-        let dir = scratch("claim");
+        let (_folder, dir) = scratch("claim");
         let queue = SqliteTransport::new(dir.join("inbox.sqlite"));
         assert_eq!(queue.name(), "sqlite");
         assert_eq!(queue.directions(), Directions::BOTH);
         assert!(queue.claims().is_some(), "the claimed column");
         assert!(queue.origin().starts_with("sqlite:///"));
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn the_loopback_sends_a_row_and_takes_it_back_from_the_same_file() {
-        let dir = scratch("loopback");
+        let (_folder, dir) = scratch("loopback");
         let pair = SqliteTransport::loopback(&dir);
         let arrived = pair.round(b"a row").expect("round");
         assert_eq!(arrived.bytes, b"a row");
@@ -475,18 +465,16 @@ mod tests {
         );
         assert_eq!(pair.name(), "sqlite");
         assert_eq!(pair.ceiling(), None);
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn the_loopback_returns_the_edge_payloads_whole() {
-        let dir = scratch("edges");
+        let (_folder, dir) = scratch("edges");
         let pair = SqliteTransport::loopback(&dir);
         for (name, payload) in edge_payloads() {
             assert!(pair.refuses(&payload).is_none(), "{name}");
             let arrived = pair.round(&payload).expect(name);
             assert_eq!(arrived.bytes, payload, "{name}");
         }
-        std::fs::remove_dir_all(&dir).ok();
     }
 }
