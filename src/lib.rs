@@ -24,35 +24,55 @@
 //! The origin URI names the row: `sqlite:///C:/queue/inbox.sqlite?row=41`.
 //! A send target is the row's `target` column — a Send Location's name for
 //! where the row is going, which a Receive Location may filter on.
+//!
+//! **Built with its `declaration` feature alone** the crate is
+//! [`declaration`], what a Location of it is configured with, and none of
+//! the code above, which is behind the default feature: what the surfaces'
+//! library carries (ADR-0064, amendment 2026-11-26).
 
+#[cfg(feature = "default")]
 pub mod claim;
+#[cfg(feature = "declaration")]
+pub mod declaration;
+#[cfg(feature = "default")]
 pub mod receipt;
 
+#[cfg(feature = "default")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "default")]
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(feature = "default")]
 pub use claim::RowClaim;
+#[cfg(feature = "default")]
 use rusqlite::{Connection, ErrorCode, params};
-use transport::ArrivalIdentity;
-use transport::arrived::next_arrival;
-use transport::claim::ResourceClaim;
+#[cfg(feature = "default")]
 use transport::error::{Result, TransportError};
-use transport::held::Held;
+#[cfg(feature = "default")]
 use transport::loopback::{FarEnd, Loopback};
+#[cfg(feature = "default")]
+use transport::{ArrivalIdentity, arrived::next_arrival, claim::ResourceClaim, held::Held};
+#[cfg(feature = "default")]
 use transport::{Arrived, Configured, Directions, Transport};
-use xcore::settings::{Applies, Kind, Presence, Read, Setting, Settings};
+#[cfg(feature = "default")]
+use xcore::settings::{Read, Settings};
 
 /// The one table, created the first time the file is sent to.
+#[cfg(feature = "default")]
 pub const CREATE: &str = "CREATE TABLE IF NOT EXISTS xmip_transport (\
     id INTEGER PRIMARY KEY, \
     target TEXT NOT NULL, \
     payload BLOB NOT NULL, \
     claimed INTEGER NOT NULL DEFAULT 0)";
+#[cfg(feature = "default")]
 const INSERT: &str = "INSERT INTO xmip_transport (target, payload, claimed) VALUES (?1, ?2, 0)";
+#[cfg(feature = "default")]
 const UNCLAIMED_ALL: &str = "SELECT id, payload FROM xmip_transport WHERE claimed = 0 ORDER BY id";
+#[cfg(feature = "default")]
 const UNCLAIMED_TARGET: &str =
     "SELECT id, payload FROM xmip_transport WHERE claimed = 0 AND target = ?1 ORDER BY id";
 
+#[cfg(feature = "default")]
 pub struct SqliteTransport {
     path: PathBuf,
     only: Option<String>,
@@ -62,6 +82,7 @@ pub struct SqliteTransport {
     refused: receipt::RefusedRows,
 }
 
+#[cfg(feature = "default")]
 impl SqliteTransport {
     /// The queue in the database file at `path`; the file, its directory
     /// and the table are created on first send.
@@ -149,6 +170,7 @@ impl SqliteTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Transport for SqliteTransport {
     fn name(&self) -> &'static str {
         "sqlite"
@@ -196,23 +218,10 @@ impl Transport for SqliteTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Configured for SqliteTransport {
-    /// The address is the database file: where a Send Location inserts and a
-    /// Receive Location takes rows.
-    const SETTINGS: &'static Settings = &Settings {
-        technology: env!("CARGO_PKG_NAME"),
-        settings: &[Setting {
-            name: "target",
-            kind: Kind::Text,
-            presence: Presence::Optional,
-            meaning: "The target a Receive Location takes rows sent to; every row when left \
-                      out.",
-            applies: Applies::Receive,
-        }],
-    };
-
-    /// The schemes a Location's address is entered with to choose this technology.
-    const SCHEMES: &'static [&'static str] = &["sqlite"];
+    const SETTINGS: &'static Settings = declaration::SETTINGS;
+    const SCHEMES: &'static [&'static str] = declaration::SCHEMES;
 
     fn configured(address: &str, settings: &Read) -> Result<Self> {
         let transport = Self::new(address);
@@ -223,6 +232,7 @@ impl Configured for SqliteTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl SqliteTransport {
     /// Both ends in one directory: send a row into a file there, take it
     /// back from the same file. Nothing listens; the file is the wire, so
@@ -244,8 +254,10 @@ impl SqliteTransport {
 
 /// Rounds begun, so each round's row is addressed to that round alone and
 /// a round that failed after its send leaves nothing the next one takes.
+#[cfg(feature = "default")]
 static ROUNDS: AtomicU64 = AtomicU64::new(1);
 
+#[cfg(feature = "default")]
 impl Loopback for SqliteTransport {
     fn arrival_identity(&self) -> ArrivalIdentity {
         ArrivalIdentity::Unnamed(
@@ -281,6 +293,7 @@ impl Loopback for SqliteTransport {
 
 /// What the engine said, judged: a busy or locked file will free up, a
 /// file that is not a database will not.
+#[cfg(feature = "default")]
 #[must_use]
 pub fn engine_error(error: &rusqlite::Error) -> TransportError {
     let retryable = matches!(
@@ -298,6 +311,7 @@ mod tests {
     use super::*;
     use std::io::Read as _;
     use transport::payload::edge_payloads;
+    use xcore::settings::Applies;
 
     #[test]
     fn sqlite_declares_its_settings_and_reads_through_them() {
