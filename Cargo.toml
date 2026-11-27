@@ -24,14 +24,10 @@ rusqlite = { version = "0.41", features = ["bundled"], optional = true }
 net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main", optional = true }
 
 [features]
-# The technology: its code, everything it is built on, and its declaration.
-# Without it the crate is its declaration alone (ADR-0064, amendments
-# 2026-10-22 and 2026-11-26).
+# The code and its declaration: the transport guide's "The declaration",
+# module/core/capability/transport/doc/adding-a-transport.md.
 default = ["declaration", "dep:transport", "dep:rusqlite", "dep:net"]
-# The declaration alone: what a Location of this technology is configured
-# with, `declaration::SETTINGS` and `SCHEMES`, and none of the code — not
-# the engine compiled in — what the surfaces' library is to carry (open
-# problem 48).
+# The declaration alone, not the engine compiled in.
 declaration = []
 
 [dev-dependencies]
