@@ -1,11 +1,11 @@
 [package]
 name = "xmip-core-transport-sqlite"
-version = "0.1.0"
-edition = "2024"
-license = "AGPL-3.0-or-later"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 repository = "https://github.com/IlleNilsson/xmip-core-transport-sqlite"
 description = "SQLite transport: a database file as a queue — a send inserts a row, a receive takes and marks the oldest unclaimed rows in one transaction, and the row is the claim. A xmip-core-transport technology."
-publish = false
+publish.workspace = true
 
 [lib]
 path = "src/lib.rs"
@@ -37,13 +37,5 @@ transport = { package = "xmip-core-transport", git = "https://github.com/IlleNil
 # A test's own temporary folder (`file::temporary`); for the tests only.
 file = { package = "xmip-core-library-file", git = "https://github.com/IlleNilsson/xmip-core-library-file", branch = "main", features = ["test-support"] }
 
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-too_many_lines = "warn"
-pedantic = { level = "warn", priority = -1 }
-missing_errors_doc = "warn"
-missing_panics_doc = "warn"
-unwrap_used = "warn"
-expect_used = "allow"
+[lints]
+workspace = true
