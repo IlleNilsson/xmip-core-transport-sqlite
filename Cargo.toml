@@ -13,15 +13,15 @@ path = "src/lib.rs"
 [dependencies]
 # A Technology depends on its parent Capability, never the reverse
 # (repository-model.md).
-transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main", optional = true }
+transport = { workspace = true, optional = true }
 # The settings this technology declares (xcore::settings), read through
 # transport::Configured (ADR-0064, amendment 2026-09-26).
-xcore = { package = "xmip-core", git = "https://github.com/IlleNilsson/xmip-core", branch = "main" }
+xcore = { workspace = true }
 # The one real engine. Bundled: the SQLite amalgamation is compiled into the
 # crate, so a node needs no SQLite installed beside it.
 rusqlite = { version = "0.41", features = ["bundled"], optional = true }
 # A filesystem path as the path of a URI, written once for the estate.
-net = { package = "xmip-core-library-net", git = "https://github.com/IlleNilsson/xmip-core-library-net", branch = "main", optional = true }
+net = { workspace = true, optional = true }
 
 [features]
 # The code and its declaration: the transport guide's "The declaration",
@@ -33,9 +33,9 @@ declaration = []
 [dev-dependencies]
 # The loopback payloads the tests drive, from the capability's test
 # support and never a production build (ADR-0044).
-transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main", features = ["test-support"] }
+transport = { workspace = true, features = ["test-support"] }
 # A test's own temporary folder (`file::temporary`); for the tests only.
-file = { package = "xmip-core-library-file", git = "https://github.com/IlleNilsson/xmip-core-library-file", branch = "main", features = ["test-support"] }
+file = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true
